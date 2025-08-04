@@ -47,7 +47,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
 
   Future<void> _initialize() async {
-    await logToApp("HomeScreen: Initializing...");
+    logToApp("HomeScreen: Initializing...");
     await _loadPersistedState();
     _listenToBackgroundService();
     await _loadRoutes();
@@ -56,16 +56,17 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // 🔥 Restart tracking if flag is true (if service wasn't already running with it)
     if (isTracking == true && selectedRouteId != null) {
-      await logToApp("HomeScreen: Auto-restarting tracking service on app relaunch...");
+      logToApp("HomeScreen: Auto-restarting tracking service on app relaunch...");
       final service = FlutterBackgroundService();
       await _checkAndRequestBatteryOptimizations();
+      // Pass the route_id when starting tracking
       service.invoke("startTracking", {'route_id': selectedRouteId});
     } else {
-      await logToApp("HomeScreen: Not auto-starting tracking. isTracking=$isTracking, selectedRouteId=$selectedRouteId");
+      logToApp("HomeScreen: Not auto-starting tracking. isTracking=$isTracking, selectedRouteId=$selectedRouteId");
     }
 
     if (mounted) setState(() => isLoadingRoutes = false);
-    await logToApp("HomeScreen: Initialization complete. isLoadingRoutes=$isLoadingRoutes");
+    logToApp("HomeScreen: Initialization complete. isLoadingRoutes=$isLoadingRoutes");
   }
 
 
@@ -140,7 +141,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (isTracking == true) {
       logToApp("HomeScreen: Tracking is active. Stopping tracking before switching routes.");
-      await _toggleTracking();
+      final service = FlutterBackgroundService();
+      service.invoke("stopTracking");
+      // Wait for tracking to stop
       await Future.delayed(const Duration(milliseconds: 500));
     }
 
@@ -171,6 +174,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await PermissionsHelper.checkAndRequestPermissions();
       await _checkAndRequestBatteryOptimizations();
       logToApp("HomeScreen: Invoking startTracking with route_id: $selectedRouteId");
+      // Pass the route_id when starting tracking
       service.invoke("startTracking", {'route_id': selectedRouteId});
     }
   }
@@ -186,7 +190,8 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     logToApp("HomeScreen: Invoking 'reconnectSocket' command for route: $selectedRouteId");
-    FlutterBackgroundService().invoke("reconnectSocket");
+    // Pass the route_id when reconnecting socket
+    FlutterBackgroundService().invoke("reconnectSocket", {'route_id': selectedRouteId});
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Attempting to reconnect socket for route: $selectedRouteId')),
     );
@@ -235,7 +240,6 @@ class _HomeScreenState extends State<HomeScreen> {
           TextButton(
             child: const Text("Clear Logs"),
             onPressed: () async {
-              await clearLogsFromStorage();
               setState(() {}); // Refresh the UI
               Navigator.pop(context);
             },

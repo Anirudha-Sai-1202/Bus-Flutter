@@ -52,7 +52,7 @@ late SharedPreferences prefs;
 // --- Helper Functions (defined globally for accessibility) ---
 
 // Function to schedule reset of sendAsUpdate at midnight
-void _scheduleMidnightReset() {
+void _scheduleMidnightReset() async {
   // Cancel any existing timer
   midnightResetTimer?.cancel();
   
@@ -66,7 +66,7 @@ void _scheduleMidnightReset() {
   final durationUntilMidnight = nextMidnight.difference(now);
   
   // Schedule the timer to reset sendAsUpdate at midnight
-  midnightResetTimer = Timer(durationUntilMidnight, () {
+  midnightResetTimer = Timer(durationUntilMidnight, () async {
     sendAsUpdate = false;
     logToApp("BackgroundService: sendAsUpdate reset to false at midnight");
     
@@ -78,55 +78,25 @@ void _scheduleMidnightReset() {
 }
 
 IO.Socket _createSocket(String url, String role, String routeId) {
-  try {
-    logToApp("SOCKET: Initializing new socket => role=$role, route_id=$routeId");
-    _updateNotification(title: "Creating Socket", content: "${routeId}.");
+  _updateNotification(title: "Creating Socket", content: "${routeId}.");
 
-
-    final manager = IO.io(
-      url,
-      IO.OptionBuilder()
+  logToApp("BackgroundService: Inside _createSocket. Building socket for URL: $url, Role: $role, **USING RouteID: $routeId**");
+  logToApp("BackgroundService: Socket query parameters - role: $role, route_id: $routeId");
+  logToApp("BackgroundService: Creating socket with URL: $url, role: $role, routeId: $routeId");
+  final socket = IO.io(
+    url,
+    IO.OptionBuilder()
         .setTransports(['websocket'])
-        .disableAutoConnect()
-        .setQuery({'role': role, 'route_id': routeId})
+        .setQuery({'role': role, 'route_id': routeId}) // Ensure routeId is correctly passed here
+        .enableReconnection()         // Enable automatic reconnection
         .setReconnectionAttempts(999) // High number for persistent reconnection
         .setReconnectionDelay(2000)   // Start retrying after 2 seconds
-        .setReconnectionDelayMax(10000) 
+        .setReconnectionDelayMax(10000) // Max delay of 10 seconds
         .build(),
-    );
-
-    final socket = manager.connect();
-
-    logToApp("SOCKET: Socket created. Waiting to connect...");
-
-    return socket;
-  } catch (e, st) {
-    logToApp("SOCKET: Failed to create socket => $e\n$st");
-    rethrow;
-  }
+  );
+  logToApp("BackgroundService: Socket created successfully");
+  return socket;
 }
-
-
-// IO.Socket _createSocket(String url, String role, String routeId) {
-//   _updateNotification(title: "Creating Socket", content: "${routeId}.");
-
-//   logToApp("BackgroundService: Inside _createSocket. Building socket for URL: $url, Role: $role, **USING RouteID: $routeId**");
-//   logToApp("BackgroundService: Socket query parameters - role: $role, route_id: $routeId");
-//   logToApp("BackgroundService: Creating socket with URL: $url, role: $role, routeId: $routeId");
-//   final socket = IO.io(
-//     url,
-//     IO.OptionBuilder()
-//         .setTransports(['websocket'])
-//         .setQuery({'role': role, 'route_id': routeId}) // Ensure routeId is correctly passed here
-//         .enableReconnection()         // Enable automatic reconnection
-//         .setReconnectionAttempts(999) // High number for persistent reconnection
-//         .setReconnectionDelay(2000)   // Start retrying after 2 seconds
-//         .setReconnectionDelayMax(10000) // Max delay of 10 seconds
-//         .build(),
-//   );
-//   logToApp("BackgroundService: Socket created successfully");
-//   return socket;
-// }
 
 void _updateNotification({required String title, required String content}) {
   flutterLocalNotificationsPlugin.show(
@@ -201,48 +171,103 @@ Future<void> _startSocketHealthCheck(ServiceInstance serviceRef) async {
 
 // Function to create and manage a persistent socket connection
 Future<void> _connectPersistentSocket(ServiceInstance serviceRef, String routeIdToConnect) async {
-  try {
-    if (currentSocket != null) {
-      logToApp("SOCKET: Cleaning up old socket");
+  logToApp("SOCKET: _connectPersistentSocket called for route: $routeIdToConnect");
+  logToApp("SOCKET: Current activeRouteId before update: $activeRouteId");
+  logToApp("SOCKET: Route ID to connect: $routeIdToConnect");
 
-      currentSocket?.clearListeners(); // Remove all custom listeners
-      currentSocket?.offAny();         // Extra safe remove
-      currentSocket?.disconnect();
-      currentSocket?.close();
-      currentSocket?.destroy();
-      currentSocket = null;
-
-      await Future.delayed(Duration(milliseconds: 100));
-      logToApp("SOCKET: Old socket cleanup completed");
+  // If socket exists, destroy it first to ensure clean connection
+  if (currentSocket != null) {
+    logToApp("SOCKET: Destroying existing socket before creating new persistent connection.");
+    logToApp("SOCKET: Current socket ID: ${currentSocket!.id}");
+    try {
+      logToApp("SOCKET: Calling offAny() on socket with ID: ${currentSocket!.id}");
+      currentSocket!.offAny(); // Remove all listeners
+      logToApp("SOCKET: Calling disconnect() on socket with ID: ${currentSocket!.id}");
+      currentSocket!.disconnect();
+      logToApp("SOCKET: Calling close() on socket with ID: ${currentSocket!.id}");
+      currentSocket!.close();
+      logToApp("SOCKET: Calling destroy() on socket with ID: ${currentSocket!.id}");
+      currentSocket!.destroy(); // Force destruction
+      currentSocket = null; // Ensure it's nullified for garbage collection
+      logToApp("SOCKET: Old socket successfully destroyed.");
+    } catch (e) {
+      logToApp("SOCKET: Error destroying old socket: $e");
     }
-
-    logToApp("SOCKET: Creating new socket for route_id=$routeIdToConnect");
-
-    currentSocket = _createSocket(websocketUrl, "Driver", routeIdToConnect);
-
-    currentSocket!.onConnect((_) {
-      logToApp("SOCKET: Connected with id: ${currentSocket!.id}");
-    });
-
-    currentSocket!.on("location_response", (data) {
-      logToApp("SOCKET: location_response => $data");
-    });
-
-    currentSocket!.onDisconnect((_) {
-      logToApp("SOCKET: Disconnected.");
-    });
-
-    currentSocket!.onError((err) {
-      logToApp("SOCKET: Error => $err");
-    });
-
-    currentSocket!.onReconnect((_) {
-      logToApp("SOCKET: Reconnected.");
-    });
-
-  } catch (e, st) {
-    logToApp("SOCKET: Error in _connectPersistentSocket => $e\n$st");
   }
+
+  // Update the global activeRouteId
+  activeRouteId = routeIdToConnect;
+  logToApp("SOCKET: GLOBAL activeRouteId updated to: $activeRouteId");
+
+  // Create a new socket instance
+  currentSocket = _createSocket(websocketUrl, "Driver", routeIdToConnect);
+  logToApp("SOCKET: New persistent socket instance created for route: $routeIdToConnect");
+
+  currentSocket!.onConnect((_) async {
+    logToApp("BackgroundService: Persistent Socket CONNECTED. **New SID: ${currentSocket!.id}** for current activeRouteId: $activeRouteId");
+    logToApp("BackgroundService: Socket connected with activeRouteId: $activeRouteId");
+    logToApp("BackgroundService: Socket connected with ID: ${currentSocket!.id}");
+    isSocketConnected = true;
+    serviceRef.invoke('updateUI', {'isTracking': isTracking, 'status': isTracking ? 'Connected' : 'Connected (Paused)', 'isAdminConnected': true, 'socketId': currentSocket!.id});
+    logToApp("BackgroundService: Emitting 'connect_driver_ui' for route: ${activeRouteId ?? 'default'} with socket ID: ${currentSocket!.id}");
+  logToApp("BackgroundService: Calling emit() with event type: connect_driver_ui, socket ID: ${currentSocket!.id}");
+  currentSocket!.emit('connect_driver_ui', {'route_id': activeRouteId ?? 'default', 'socket_id': currentSocket!.id});
+    logToApp("BackgroundService: Emitted 'connect_driver_ui' for route: $activeRouteId.");
+  });
+
+  currentSocket!.onConnectError((error) async {
+    isSocketConnected = false;
+    logToApp("BackgroundService: Persistent Socket Connection Error for route $activeRouteId: $error");
+    logToApp("BackgroundService: Socket connection error with ID: ${currentSocket?.id}");
+    serviceRef.invoke('updateUI', {'isTracking': isTracking, 'status': 'Connection Error', 'isAdminConnected': false, 'socketId': currentSocket?.id});
+    _updateNotification(title: "Connection Error", content: "Retrying connection...");
+  });
+
+  currentSocket!.onDisconnect((_) async {
+    isSocketConnected = false;
+    logToApp("BackgroundService: Persistent Socket DISCONNECTED for route: $activeRouteId. Triggering UI update.");
+    logToApp("BackgroundService: Socket disconnected with ID: ${currentSocket?.id}");
+    serviceRef.invoke('updateUI', {'isTracking': isTracking, 'status': 'Connection Lost', 'isAdminConnected': false, 'socketId': currentSocket?.id});
+    _updateNotification(title: "Service Disconnected", content: "Attempting to reconnect.");
+  });
+
+  currentSocket!.onError((error) async {
+    logToApp("BackgroundService: Persistent Socket Error for route $activeRouteId: $error");
+    logToApp("BackgroundService: Socket error with ID: ${currentSocket?.id}");
+    serviceRef.invoke('updateUI', {'isAdminConnected': false, 'status': 'Socket Error', 'isTracking': isTracking, 'socketId': currentSocket?.id});
+  });
+
+  currentSocket!.on('start_now', (_) async {
+    logToApp("START_NOW: Received automatic start command from server");
+    sendAsUpdate = true;
+    _startTrackingLogic(serviceRef); // Server commands to start tracking
+  });
+
+  currentSocket!.on('disconnect_by_admin', (data) async {
+    logToApp("ADMIN DISCONNECT: Received disconnect command from admin panel");
+    // Set sendAsUpdate to false when disconnected by admin
+    sendAsUpdate = false;
+    _updateNotification(title: "Disconnected by Admin", content: "Service is on standby.");
+    serviceRef.invoke('updateUI', {'isTracking': false, 'status': 'Stopped by Admin', 'isAdminConnected': isSocketConnected});
+    logToApp("ADMIN DISCONNECT: Location broadcasting stopped, socket remains connected");
+  });
+
+  currentSocket!.on('admin_start', (data) async {
+    logToApp("ADMIN START: Received start command from admin panel");
+    // Simply start tracking without checking routes or creating new sockets
+    sendAsUpdate = true;
+    await _startTrackingLogic(serviceRef); // Start tracking
+  });
+
+  currentSocket!.on('admin_stop', (data) async {
+    await _stopTrackingLogic(serviceRef); // Stop tracking, keep socket connected
+    _updateNotification(title: "Disconnected by Admin", content: "Service is on standby.");
+    serviceRef.invoke('updateUI', {'isTracking': false, 'status': 'Stopped by Admin', 'isAdminConnected': isSocketConnected});
+  });
+
+  logToApp("SOCKET: Calling connect() for socket with ID: ${currentSocket?.id} and route: $activeRouteId");
+  currentSocket!.connect();
+  logToApp("SOCKET: Persistent socket connect() called for route: $activeRouteId");
 }
 
 // Function to start location tracking (starts timer)
@@ -305,21 +330,16 @@ Future<void> _startTrackingLogic(ServiceInstance serviceRef) async {
 
 // Function to stop location tracking (stops timer, keeps socket connected)
 Future<void> _stopTrackingLogic(ServiceInstance serviceRef) async {
-  logToApp("BackgroundService: _stopTrackingLogic called. Current state - isTracking: $isTracking, trackingTimer active: ${trackingTimer?.isActive ?? false}");
-  logToApp("BackgroundService: Current activeRouteId: $activeRouteId");
-  
-  // If not tracking, just return
   if (!isTracking && (trackingTimer == null || !trackingTimer!.isActive)) {
-    logToApp("BackgroundService: Tracking is already inactive. Skipping stop tracking logic.");
+    logToApp("BackgroundService: Tracking is already inactive. Skipping stop tracking logic for route: ${activeRouteId ?? 'N/A'}.");
     return;
   }
 
   isTracking = false;
-  sendAsUpdate = false; // Set to false when not tracking
   WakelockPlus.disable();
   trackingTimer?.cancel();
   trackingTimer = null;
-  logToApp("BackgroundService: Tracking timer cancelled and wakelock disabled.");
+  logToApp("BackgroundService: Tracking timer cancelled and wakelock disabled for route: ${activeRouteId ?? 'N/A'}.");
 
   // Send a final "stopped" broadcast if the socket is still connected
   if (currentSocket != null && currentSocket!.connected && activeRouteId != null) {
@@ -327,8 +347,8 @@ Future<void> _stopTrackingLogic(ServiceInstance serviceRef) async {
   }
 
   _updateNotification(title: "Tracking Stopped", content: "Service connected, but tracking is paused.");
-  serviceRef.invoke('updateUI', {'isTracking': false, 'status': 'Connected (Paused)', 'isAdminConnected': isSocketConnected, 'socketId': currentSocket?.id});
-  logToApp("BackgroundService: Tracking stopped, UI updated.");
+  serviceRef.invoke('updateUI', {'isTracking': false, 'status': 'Connected (Paused)', 'isAdminConnected': isSocketConnected});
+  logToApp("BackgroundService: Tracking stopped, UI updated for route: ${activeRouteId ?? 'N/A'}.");
 }
 
 

@@ -3,7 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 // In-memory cache for logs to avoid frequent disk reads
 List<String> appLogs = [];
 
-Future<void> logToApp(String message) async {
+void logToApp(String message) async {
   // Add timestamp
   final now = DateTime.now();
   final timestamp = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
