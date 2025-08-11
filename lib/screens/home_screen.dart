@@ -3,9 +3,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:vibration/vibration.dart';
+import '../services/background_service.dart';
 import '../services/route_service.dart';
 import '../utils/constants.dart';
 import '../utils/permissions_helper.dart';
@@ -58,7 +57,6 @@ class _HomeScreenState extends State<HomeScreen> {
     if (isTracking == true && selectedRouteId != null) {
       logToApp("HomeScreen: Auto-restarting tracking service on app relaunch...");
       final service = FlutterBackgroundService();
-      await _checkAndRequestBatteryOptimizations();
       // Pass the route_id when starting tracking
       service.invoke("startTracking", {'route_id': selectedRouteId});
     } else {
@@ -82,7 +80,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _listenToBackgroundService() {
-    logToApp("Setting up background service listener for 'updateUI'.");
     FlutterBackgroundService().on('updateUI').listen((event) {
       if (mounted && event != null) {
         final bool newTrackingState = event['isTracking'] ?? isTracking!;
@@ -172,7 +169,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       logToApp("HomeScreen: Checking and requesting permissions and battery optimizations.");
       await PermissionsHelper.checkAndRequestPermissions();
-      await _checkAndRequestBatteryOptimizations();
       logToApp("HomeScreen: Invoking startTracking with route_id: $selectedRouteId");
       // Pass the route_id when starting tracking
       service.invoke("startTracking", {'route_id': selectedRouteId});
@@ -197,12 +193,22 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-
-  Future<void> _checkAndRequestBatteryOptimizations() async {
-    logToApp("HomeScreen: Checking battery optimization status.");
-    // Battery optimization check removed due to plugin issues
-    logToApp("HomeScreen: Battery optimization check skipped.");
+  Future<void> _onDisconnectSocket() async {
+      if (currentSocket != null) {
+      logToApp("BackgroundService: Attempting to fully destroy main socket during cleanup.");
+      try {
+        currentSocket!.offAny();
+        currentSocket!.disconnect();
+        currentSocket!.close();
+        currentSocket!.destroy(); // Explicitly destroy the socket on full service shutdown
+        currentSocket = null;
+        logToApp("BackgroundService: Main socket completely destroyed during cleanup.");
+      } catch (e) {
+        logToApp("BackgroundService: Error destroying socket during cleanup: $e");
+      }
+    }
   }
+
 
   void _showLogsDialog(BuildContext context) {
     showDialog(
@@ -239,9 +245,13 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [
           TextButton(
             child: const Text("Clear Logs"),
-            onPressed: () async {
+            onPressed: () {
+              clearLogsFromStorage(); // Clear logs from both memory and storage
               setState(() {}); // Refresh the UI
-              Navigator.pop(context);
+              Navigator.pop(context); // Close the dialog
+              ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Logs cleared successfully')),
+              );
             },
           ),
           TextButton(
@@ -294,18 +304,18 @@ class _HomeScreenState extends State<HomeScreen> {
                         },
                 ),
               const SizedBox(height: 40),
+              // Text(
+              //   statusMessage,
+              //   style: TextStyle(
+              //     fontSize: 22,
+              //     fontWeight: FontWeight.bold,
+              //     color: statusColor,
+              //   ),
+              // ),
               Text(
-                statusMessage,
+                isAdminConnected ? "Connected" : "Disconnected",
                 style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                  color: statusColor,
-                ),
-              ),
-              Text(
-                isAdminConnected ? "Connected to Admin" : "Disconnected from Admin",
-                style: TextStyle(
-                  fontSize: 14,
+                  fontSize: 20,
                   color: isAdminConnected ? Colors.green : Colors.red,
                 ),
               ),
@@ -326,7 +336,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   decoration: BoxDecoration(
                     color: isTracking == true
                         ? Colors.red.shade700
-                        : Colors.indigo.shade700,
+                        : const Color.fromARGB(255, 48, 159, 126),
                     shape: BoxShape.circle,
                   ),
                   alignment: Alignment.center,
@@ -353,19 +363,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 onPressed: () => _showLogsDialog(context),
                 child: const Text("View Logs"),
               ),
-              Align(
-              alignment: Alignment.topRight,
-              child: Padding(
-                padding: const EdgeInsets.all(4.0),
-                child: TextButton(
-                  onPressed: () {
-                    logToApp("HomeScreen: Exiting app via SystemNavigator.pop()");
-                    SystemNavigator.pop();
-                  },
-                  child: const Text("~"),
-                ),
-              ),
-            ),
             ],
           ),
         ),

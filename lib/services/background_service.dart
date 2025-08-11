@@ -3,7 +3,6 @@
 import 'dart:async';
 import 'dart:ui';
 import 'package:flutter_background_service/flutter_background_service.dart';
-import 'package:flutter_background_service_android/flutter_background_service_android.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
@@ -47,6 +46,7 @@ String? activeRouteId; // The route ID the currentSocket is connected with
 bool isTracking = false; // Indicates if location updates are actively being sent
 bool isSocketConnected = false; // Indicates if the single socket is connected
 bool sendAsUpdate = false; // Controls if 'location_update' or 'check_location' is sent
+bool isStopping = false; // Flag to prevent location updates during stopping process
 late SharedPreferences prefs;
 
 // --- Helper Functions (defined globally for accessibility) ---
@@ -78,10 +78,6 @@ void _scheduleMidnightReset() async {
 }
 
 IO.Socket _createSocket(String url, String role, String routeId) {
-  _updateNotification(title: "Creating Socket", content: "${routeId}.");
-
-  logToApp("BackgroundService: Inside _createSocket. Building socket for URL: $url, Role: $role, **USING RouteID: $routeId**");
-  logToApp("BackgroundService: Socket query parameters - role: $role, route_id: $routeId");
   logToApp("BackgroundService: Creating socket with URL: $url, role: $role, routeId: $routeId");
   final socket = IO.io(
     url,
@@ -171,25 +167,14 @@ Future<void> _startSocketHealthCheck(ServiceInstance serviceRef) async {
 
 // Function to create and manage a persistent socket connection
 Future<void> _connectPersistentSocket(ServiceInstance serviceRef, String routeIdToConnect) async {
-  logToApp("SOCKET: _connectPersistentSocket called for route: $routeIdToConnect");
-  logToApp("SOCKET: Current activeRouteId before update: $activeRouteId");
-  logToApp("SOCKET: Route ID to connect: $routeIdToConnect");
-
   // If socket exists, destroy it first to ensure clean connection
   if (currentSocket != null) {
-    logToApp("SOCKET: Destroying existing socket before creating new persistent connection.");
-    logToApp("SOCKET: Current socket ID: ${currentSocket!.id}");
     try {
-      logToApp("SOCKET: Calling offAny() on socket with ID: ${currentSocket!.id}");
-      currentSocket!.offAny(); // Remove all listeners
-      logToApp("SOCKET: Calling disconnect() on socket with ID: ${currentSocket!.id}");
+      currentSocket!.offAny();
       currentSocket!.disconnect();
-      logToApp("SOCKET: Calling close() on socket with ID: ${currentSocket!.id}");
       currentSocket!.close();
-      logToApp("SOCKET: Calling destroy() on socket with ID: ${currentSocket!.id}");
-      currentSocket!.destroy(); // Force destruction
-      currentSocket = null; // Ensure it's nullified for garbage collection
-      logToApp("SOCKET: Old socket successfully destroyed.");
+      currentSocket!.destroy();
+      currentSocket = null;
     } catch (e) {
       logToApp("SOCKET: Error destroying old socket: $e");
     }
@@ -197,72 +182,60 @@ Future<void> _connectPersistentSocket(ServiceInstance serviceRef, String routeId
 
   // Update the global activeRouteId
   activeRouteId = routeIdToConnect;
-  logToApp("SOCKET: GLOBAL activeRouteId updated to: $activeRouteId");
-
   // Create a new socket instance
   currentSocket = _createSocket(websocketUrl, "Driver", routeIdToConnect);
-  logToApp("SOCKET: New persistent socket instance created for route: $routeIdToConnect");
-
   currentSocket!.onConnect((_) async {
-    logToApp("BackgroundService: Persistent Socket CONNECTED. **New SID: ${currentSocket!.id}** for current activeRouteId: $activeRouteId");
-    logToApp("BackgroundService: Socket connected with activeRouteId: $activeRouteId");
-    logToApp("BackgroundService: Socket connected with ID: ${currentSocket!.id}");
     isSocketConnected = true;
-    serviceRef.invoke('updateUI', {'isTracking': isTracking, 'status': isTracking ? 'Connected' : 'Connected (Paused)', 'isAdminConnected': true, 'socketId': currentSocket!.id});
-    logToApp("BackgroundService: Emitting 'connect_driver_ui' for route: ${activeRouteId ?? 'default'} with socket ID: ${currentSocket!.id}");
-  logToApp("BackgroundService: Calling emit() with event type: connect_driver_ui, socket ID: ${currentSocket!.id}");
-  currentSocket!.emit('connect_driver_ui', {'route_id': activeRouteId ?? 'default', 'socket_id': currentSocket!.id});
-    logToApp("BackgroundService: Emitted 'connect_driver_ui' for route: $activeRouteId.");
+    serviceRef.invoke('updateUI', {'isTracking': isTracking, 'status':'Connected', 'isAdminConnected': true, 'socketId': currentSocket!.id});
+    _updateNotification(title: "Service Connected", content: "Connected to route: $activeRouteId.");
+    currentSocket!.emit('connected', {'route_id': activeRouteId ?? 'default', 'socket_id': currentSocket!.id,'role': 'Driver'});
   });
 
   currentSocket!.onConnectError((error) async {
     isSocketConnected = false;
-    logToApp("BackgroundService: Persistent Socket Connection Error for route $activeRouteId: $error");
-    logToApp("BackgroundService: Socket connection error with ID: ${currentSocket?.id}");
     serviceRef.invoke('updateUI', {'isTracking': isTracking, 'status': 'Connection Error', 'isAdminConnected': false, 'socketId': currentSocket?.id});
     _updateNotification(title: "Connection Error", content: "Retrying connection...");
   });
 
   currentSocket!.onDisconnect((_) async {
     isSocketConnected = false;
-    logToApp("BackgroundService: Persistent Socket DISCONNECTED for route: $activeRouteId. Triggering UI update.");
-    logToApp("BackgroundService: Socket disconnected with ID: ${currentSocket?.id}");
-    serviceRef.invoke('updateUI', {'isTracking': isTracking, 'status': 'Connection Lost', 'isAdminConnected': false, 'socketId': currentSocket?.id});
+    serviceRef.invoke('updateUI', {'isTracking': isTracking, 'status': 'Disconnected', 'isAdminConnected': false, 'socketId': currentSocket?.id});
     _updateNotification(title: "Service Disconnected", content: "Attempting to reconnect.");
   });
 
   currentSocket!.onError((error) async {
-    logToApp("BackgroundService: Persistent Socket Error for route $activeRouteId: $error");
-    logToApp("BackgroundService: Socket error with ID: ${currentSocket?.id}");
     serviceRef.invoke('updateUI', {'isAdminConnected': false, 'status': 'Socket Error', 'isTracking': isTracking, 'socketId': currentSocket?.id});
   });
 
   currentSocket!.on('start_now', (_) async {
-    logToApp("START_NOW: Received automatic start command from server");
     sendAsUpdate = true;
     _startTrackingLogic(serviceRef); // Server commands to start tracking
   });
 
-  currentSocket!.on('disconnect_by_admin', (data) async {
-    logToApp("ADMIN DISCONNECT: Received disconnect command from admin panel");
-    // Set sendAsUpdate to false when disconnected by admin
-    sendAsUpdate = false;
-    _updateNotification(title: "Disconnected by Admin", content: "Service is on standby.");
-    serviceRef.invoke('updateUI', {'isTracking': false, 'status': 'Stopped by Admin', 'isAdminConnected': isSocketConnected});
-    logToApp("ADMIN DISCONNECT: Location broadcasting stopped, socket remains connected");
+  currentSocket!.on('server_start', (data) async {
+    await _startTrackingLogic(serviceRef); // Start tracking
   });
 
   currentSocket!.on('admin_start', (data) async {
-    logToApp("ADMIN START: Received start command from admin panel");
-    // Simply start tracking without checking routes or creating new sockets
     sendAsUpdate = true;
     await _startTrackingLogic(serviceRef); // Start tracking
   });
 
-  currentSocket!.on('admin_stop', (data) async {
+  currentSocket!.on('server_stop', (data) async {
+    isStopping = true; // Set stopping flag to prevent location updates
     await _stopTrackingLogic(serviceRef); // Stop tracking, keep socket connected
     _updateNotification(title: "Disconnected by Admin", content: "Service is on standby.");
-    serviceRef.invoke('updateUI', {'isTracking': false, 'status': 'Stopped by Admin', 'isAdminConnected': isSocketConnected});
+    serviceRef.invoke('updateUI', {'isTracking': false, 'status': 'Stopped', 'isAdminConnected': isSocketConnected});
+    isStopping = false; // Reset stopping flag after stop logic completes
+  });
+
+  currentSocket!.on('admin_stop', (data) async {
+    isStopping = true; // Set stopping flag to prevent location updates
+    sendAsUpdate = false; // Reset to false on admin stop
+    await _stopTrackingLogic(serviceRef); // Stop tracking, keep socket connected
+    _updateNotification(title: "Disconnected by Admin", content: "Service is on standby.");
+    serviceRef.invoke('updateUI', {'isTracking': false, 'status': 'Stopped', 'isAdminConnected': isSocketConnected});
+    isStopping = false; // Reset stopping flag after stop logic completes
   });
 
   logToApp("SOCKET: Calling connect() for socket with ID: ${currentSocket?.id} and route: $activeRouteId");
@@ -272,9 +245,6 @@ Future<void> _connectPersistentSocket(ServiceInstance serviceRef, String routeId
 
 // Function to start location tracking (starts timer)
 Future<void> _startTrackingLogic(ServiceInstance serviceRef) async {
-  logToApp("BackgroundService: _startTrackingLogic called. Current state - isTracking: $isTracking, trackingTimer active: ${trackingTimer?.isActive ?? false}");
-  logToApp("BackgroundService: Current activeRouteId: $activeRouteId");
-  
   // If already tracking, just return
   if (isTracking && trackingTimer != null && trackingTimer!.isActive) {
     logToApp("BackgroundService: Tracking already active. Skipping start tracking logic.");
@@ -284,7 +254,7 @@ Future<void> _startTrackingLogic(ServiceInstance serviceRef) async {
   // Check if socket is connected
   if (currentSocket == null || !currentSocket!.connected) {
     logToApp("BackgroundService: Cannot start tracking: Socket not connected.");
-    serviceRef.invoke('updateUI', {'isTracking': false, 'status': 'Socket Disconnected', 'isAdminConnected': false});
+    serviceRef.invoke('updateUI', {'isTracking': false, 'status': 'Disconnected', 'isAdminConnected': false});
     _updateNotification(title: "Tracking Failed", content: "Socket not connected.");
     return;
   }
@@ -300,8 +270,12 @@ Future<void> _startTrackingLogic(ServiceInstance serviceRef) async {
   trackingTimer?.cancel();
 
   trackingTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
-    if (currentSocket == null || !currentSocket!.connected || !isTracking) {
-      logToApp("BackgroundService: Tracking timer stopped: socket disconnected or not tracking.");
+    // Add a small delay to allow stop commands to be processed
+    await Future.delayed(const Duration(milliseconds: 100));
+    
+    // Check again if we should stop tracking after the delay
+    if (currentSocket == null || !currentSocket!.connected || !isTracking || isStopping) {
+      logToApp("BackgroundService: Tracking timer stopped: socket disconnected, not tracking, or stopping.");
       timer.cancel();
       return;
     }
@@ -335,19 +309,19 @@ Future<void> _stopTrackingLogic(ServiceInstance serviceRef) async {
     return;
   }
 
+  // Send a final "stopped" broadcast if the socket is still connected
+  // if (currentSocket != null && currentSocket!.connected && activeRouteId != null) {
+    await _sendFinalBroadcast(currentSocket!, activeRouteId!);
+  // }
+
   isTracking = false;
   WakelockPlus.disable();
   trackingTimer?.cancel();
   trackingTimer = null;
   logToApp("BackgroundService: Tracking timer cancelled and wakelock disabled for route: ${activeRouteId ?? 'N/A'}.");
 
-  // Send a final "stopped" broadcast if the socket is still connected
-  if (currentSocket != null && currentSocket!.connected && activeRouteId != null) {
-    await _sendFinalBroadcast(currentSocket!, activeRouteId!);
-  }
-
   _updateNotification(title: "Tracking Stopped", content: "Service connected, but tracking is paused.");
-  serviceRef.invoke('updateUI', {'isTracking': false, 'status': 'Connected (Paused)', 'isAdminConnected': isSocketConnected});
+  serviceRef.invoke('updateUI', {'isTracking': false, 'status': 'Connected', 'isAdminConnected': isSocketConnected});
   logToApp("BackgroundService: Tracking stopped, UI updated for route: ${activeRouteId ?? 'N/A'}.");
 }
 
@@ -506,11 +480,17 @@ void onStart(ServiceInstance service) async {
     service.on('stopTracking').listen((event) async {
       logToApp("BackgroundService: Received 'stopTracking' command from UI.");
       
+      // Set stopping flag to prevent location updates during stopping process
+      isStopping = true;
+      
       // Simply stop tracking without disconnecting socket
       sendAsUpdate = false;
       logToApp("BackgroundService: UI stopTracking: Stopping tracking logic.");
       await _stopTrackingLogic(service);
       logToApp("BackgroundService: UI stopTracking: Tracking logic stopped.");
+      
+      // Reset stopping flag after stop logic completes
+      isStopping = false;
       
       // Update SharedPreferences
       await prefs.setBool('location_started', false);
