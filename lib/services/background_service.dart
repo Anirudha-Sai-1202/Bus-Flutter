@@ -41,41 +41,14 @@ Future<void> initializeService() async {
 IO.Socket? currentSocket;
 Timer? trackingTimer;
 Timer? socketHealthTimer; // New timer for socket health checks
-Timer? midnightResetTimer; // Timer to reset sendAsUpdate at midnight
 String? activeRouteId; // The route ID the currentSocket is connected with
 bool isTracking = false; // Indicates if location updates are actively being sent
 bool isSocketConnected = false; // Indicates if the single socket is connected
-bool sendAsUpdate = false; // Controls if 'location_update' or 'check_location' is sent
 bool isStopping = false; // Flag to prevent location updates during stopping process
 late SharedPreferences prefs;
 
 // --- Helper Functions (defined globally for accessibility) ---
 
-// Function to schedule reset of sendAsUpdate at midnight
-void _scheduleMidnightReset() async {
-  // Cancel any existing timer
-  midnightResetTimer?.cancel();
-  
-  // Get the current time
-  final now = DateTime.now();
-  
-  // Calculate the next midnight
-  final nextMidnight = DateTime(now.year, now.month, now.day + 1, 0, 0, 0);
-  
-  // Calculate the duration until midnight
-  final durationUntilMidnight = nextMidnight.difference(now);
-  
-  // Schedule the timer to reset sendAsUpdate at midnight
-  midnightResetTimer = Timer(durationUntilMidnight, () async {
-    sendAsUpdate = false;
-    logToApp("BackgroundService: sendAsUpdate reset to false at midnight");
-    
-    // Schedule the next reset
-    _scheduleMidnightReset();
-  });
-  
-  logToApp("BackgroundService: Scheduled sendAsUpdate reset in ${durationUntilMidnight.inSeconds} seconds");
-}
 
 IO.Socket _createSocket(String url, String role, String routeId) {
   logToApp("BackgroundService: Creating socket with URL: $url, role: $role, routeId: $routeId");
@@ -124,13 +97,15 @@ Future<void> _sendFinalBroadcast(IO.Socket socket, String routeId) async {
   try {
     Position? position = await Geolocator.getLastKnownPosition() ?? await Geolocator.getCurrentPosition(timeLimit: const Duration(seconds: 5));
     logToApp("BackgroundService: Calling emit() for final broadcast with event type: location_update, socket ID: ${socket.id}");
-    socket.emit("location_update", {
+    socket.emit("final_update", {
       "route_id": routeId, "latitude": position?.latitude, "longitude": position?.longitude, "socket_id": socket.id,
       "role": "Driver", "heading": position?.heading, "status": "stopped", "timestamp": DateTime.now().millisecondsSinceEpoch,
     });
     await Future.delayed(const Duration(milliseconds: 500));
     logToApp("BackgroundService: Final broadcast sent successfully for route: $routeId.");
-  } catch (e) { logToApp("BackgroundService: Error sending final broadcast for route $routeId: $e"); }
+  } catch (e) { 
+      //logToApp("BackgroundService: Error sending final broadcast for route $routeId: $e"); 
+    }
 }
 
 // Function to periodically check socket health and reconnect if needed
@@ -207,17 +182,11 @@ Future<void> _connectPersistentSocket(ServiceInstance serviceRef, String routeId
     serviceRef.invoke('updateUI', {'isAdminConnected': false, 'status': 'Socket Error', 'isTracking': isTracking, 'socketId': currentSocket?.id});
   });
 
-  currentSocket!.on('start_now', (_) async {
-    sendAsUpdate = true;
+  currentSocket!.on('server_start', (_) async {
     _startTrackingLogic(serviceRef); // Server commands to start tracking
   });
 
-  currentSocket!.on('server_start', (data) async {
-    await _startTrackingLogic(serviceRef); // Start tracking
-  });
-
   currentSocket!.on('admin_start', (data) async {
-    sendAsUpdate = true;
     await _startTrackingLogic(serviceRef); // Start tracking
   });
 
@@ -226,16 +195,15 @@ Future<void> _connectPersistentSocket(ServiceInstance serviceRef, String routeId
     await _stopTrackingLogic(serviceRef); // Stop tracking, keep socket connected
     _updateNotification(title: "Disconnected by Admin", content: "Service is on standby.");
     serviceRef.invoke('updateUI', {'isTracking': false, 'status': 'Stopped', 'isAdminConnected': isSocketConnected});
-    isStopping = false; // Reset stopping flag after stop logic completes
+    // Note: isStopping flag is reset in _stopTrackingLogic after final broadcast
   });
 
   currentSocket!.on('admin_stop', (data) async {
     isStopping = true; // Set stopping flag to prevent location updates
-    sendAsUpdate = false; // Reset to false on admin stop
     await _stopTrackingLogic(serviceRef); // Stop tracking, keep socket connected
     _updateNotification(title: "Disconnected by Admin", content: "Service is on standby.");
     serviceRef.invoke('updateUI', {'isTracking': false, 'status': 'Stopped', 'isAdminConnected': isSocketConnected});
-    isStopping = false; // Reset stopping flag after stop logic completes
+    // Note: isStopping flag is reset in _stopTrackingLogic after final broadcast
   });
 
   logToApp("SOCKET: Calling connect() for socket with ID: ${currentSocket?.id} and route: $activeRouteId");
@@ -260,7 +228,6 @@ Future<void> _startTrackingLogic(ServiceInstance serviceRef) async {
   }
 
   isTracking = true;
-  // Note: sendAsUpdate should remain false initially, only start_now should set it to true
   WakelockPlus.enable();
   _updateNotification(title: "Tracking Active", content: "Live on Route: ${activeRouteId ?? 'N/A'}");
   serviceRef.invoke('updateUI', {'isTracking': true, 'status': 'Connected', 'isAdminConnected': true, 'socketId': currentSocket?.id});
@@ -281,8 +248,8 @@ Future<void> _startTrackingLogic(ServiceInstance serviceRef) async {
     }
     try {
       Position position = await Geolocator.getCurrentPosition(forceAndroidLocationManager: true, timeLimit: const Duration(seconds: 10));
-      logToApp("BackgroundService: Emitting location. Route: ${activeRouteId ?? 'N/A'}. Lat=${position.latitude}, Lng=${position.longitude}, Status=${sendAsUpdate ? "tracking_active" : "checking"}");
-      final String eventType = sendAsUpdate ? "location_update" : "check_location";
+      logToApp("BackgroundService: Emitting location. Route: ${activeRouteId ?? 'N/A'}. Lat=${position.latitude}, Lng=${position.longitude}, Status=${"tracking_active"}");
+      final String eventType = "location_update";
       logToApp("BackgroundService: Emitting $eventType for route: ${activeRouteId ?? 'default'}");
       logToApp("BackgroundService: Calling emit() with event type: $eventType, socket ID: ${currentSocket!.id}");
       currentSocket!.emit(eventType, {
@@ -292,7 +259,7 @@ Future<void> _startTrackingLogic(ServiceInstance serviceRef) async {
         "socket_id": currentSocket!.id,
         "role": "Driver",
         "heading": position.heading,
-        "status": sendAsUpdate ? "tracking_active" : "checking",
+        "status":"tracking_active",
         "timestamp": DateTime.now().millisecondsSinceEpoch,
       });
     } catch (e) {
@@ -306,55 +273,32 @@ Future<void> _startTrackingLogic(ServiceInstance serviceRef) async {
 Future<void> _stopTrackingLogic(ServiceInstance serviceRef) async {
   if (!isTracking && (trackingTimer == null || !trackingTimer!.isActive)) {
     logToApp("BackgroundService: Tracking is already inactive. Skipping stop tracking logic for route: ${activeRouteId ?? 'N/A'}.");
+    // Reset isStopping flag as we're not actually stopping anything
+    isStopping = false;
     return;
   }
 
-  // Send a final "stopped" broadcast if the socket is still connected
-  // if (currentSocket != null && currentSocket!.connected && activeRouteId != null) {
-    await _sendFinalBroadcast(currentSocket!, activeRouteId!);
-  // }
-
+  // Immediately stop broadcasting location updates
   isTracking = false;
-  WakelockPlus.disable();
   trackingTimer?.cancel();
   trackingTimer = null;
-  logToApp("BackgroundService: Tracking timer cancelled and wakelock disabled for route: ${activeRouteId ?? 'N/A'}.");
+  logToApp("BackgroundService: Tracking timer cancelled for route: ${activeRouteId ?? 'N/A'}.");
+
+  // After 1 second, send a final broadcast with status "stopped"
+  await Future.delayed(const Duration(seconds: 1));
+  if (currentSocket != null && currentSocket!.connected && activeRouteId != null) {
+    await _sendFinalBroadcast(currentSocket!, activeRouteId!);
+  }
+
+  WakelockPlus.disable();
+  logToApp("BackgroundService: Wakelock disabled for route: ${activeRouteId ?? 'N/A'}.");
 
   _updateNotification(title: "Tracking Stopped", content: "Service connected, but tracking is paused.");
   serviceRef.invoke('updateUI', {'isTracking': false, 'status': 'Connected', 'isAdminConnected': isSocketConnected});
   logToApp("BackgroundService: Tracking stopped, UI updated for route: ${activeRouteId ?? 'N/A'}.");
-}
-
-
-// Updated _cleanupResources for full service shutdown (e.g., app killed)
-// This will be called when the service itself is being completely shut down.
-Future<void> _cleanupResources(ServiceInstance serviceRef, {bool sendFinalBroadcast = false}) async {
-  logToApp("BackgroundService: Cleaning up ALL resources for full shutdown. sendFinalBroadcast=$sendFinalBroadcast.");
-  // Ensure tracking is stopped before disconnecting socket
-  await _stopTrackingLogic(serviceRef);
-
-  // Cancel the socket health timer
-  socketHealthTimer?.cancel();
-  socketHealthTimer = null;
-  logToApp("BackgroundService: Socket health timer cancelled during cleanup.");
-
-  if (currentSocket != null) {
-    logToApp("BackgroundService: Attempting to fully destroy main socket during cleanup.");
-    try {
-      currentSocket!.offAny();
-      currentSocket!.disconnect();
-      currentSocket!.close();
-      currentSocket!.destroy(); // Explicitly destroy the socket on full service shutdown
-      currentSocket = null;
-      logToApp("BackgroundService: Main socket completely destroyed during cleanup.");
-    } catch (e) {
-      logToApp("BackgroundService: Error destroying socket during cleanup: $e");
-    }
-  }
-
-  isSocketConnected = false;
-  serviceRef.invoke('updateUI', {'isTracking': false, 'status': 'Stopped', 'isAdminConnected': false, 'socketId': null});
-  logToApp("BackgroundService: Invoked updateUI: isTracking=false, status=Stopped for full shutdown cleanup.");
+  
+  // Reset isStopping flag after final broadcast is sent
+  isStopping = false;
 }
 
 
@@ -374,9 +318,6 @@ void onStart(ServiceInstance service) async {
   Future.microtask(() async {
     // Add a small delay to ensure SharedPreferences are properly initialized
     await Future.delayed(const Duration(milliseconds: 200));
-    
-    // Initialize the midnight reset timer for sendAsUpdate
-    _scheduleMidnightReset();
     
     // Always re-fetch the latest selectedRoute from preferences at the start of onStart logic
     final String? storedRouteId = prefs.getString('selectedRoute');
@@ -465,7 +406,6 @@ void onStart(ServiceInstance service) async {
       }
 
       // Simply start tracking without creating new sockets
-      // Note: sendAsUpdate should remain false initially, only start_now should set it to true
       logToApp("BackgroundService: UI startTracking: Starting tracking logic.");
       await _startTrackingLogic(service);
       logToApp("BackgroundService: UI startTracking: Tracking logic initiated.");
@@ -484,7 +424,6 @@ void onStart(ServiceInstance service) async {
       isStopping = true;
       
       // Simply stop tracking without disconnecting socket
-      sendAsUpdate = false;
       logToApp("BackgroundService: UI stopTracking: Stopping tracking logic.");
       await _stopTrackingLogic(service);
       logToApp("BackgroundService: UI stopTracking: Tracking logic stopped.");

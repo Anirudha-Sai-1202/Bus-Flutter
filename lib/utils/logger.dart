@@ -4,38 +4,38 @@ import 'package:shared_preferences/shared_preferences.dart';
 List<String> appLogs = [];
 
 void logToApp(String message) async {
-  // Add timestamp
-  final now = DateTime.now();
-  final timestamp = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
-  final entry = "[$timestamp] $message";
+  // // Add timestamp
+  // final now = DateTime.now();
+  // final timestamp = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
+  // final entry = "[$timestamp] $message";
   
-  // Add to in-memory cache
-  appLogs.insert(0, entry);
+  // // Add to in-memory cache
+  // appLogs.insert(0, entry);
   
-  // Limit in-memory cache size
-  if (appLogs.length > 500) {
-    appLogs.removeLast();
-  }
+  // // Limit in-memory cache size
+  // if (appLogs.length > 500) {
+  //   appLogs.removeLast();
+  // }
   
-  // Also save to shared preferences for persistence across processes
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    final List<String> storedLogs = prefs.getStringList('app_logs') ?? [];
-    storedLogs.insert(0, entry);
+  // // Also save to shared preferences for persistence across processes
+  // try {
+  //   final prefs = await SharedPreferences.getInstance();
+  //   final List<String> storedLogs = prefs.getStringList('app_logs') ?? [];
+  //   storedLogs.insert(0, entry);
     
-    // Limit stored logs size
-    if (storedLogs.length > 500) {
-      storedLogs.removeRange(500, storedLogs.length);
-    }
+  //   // Limit stored logs size
+  //   if (storedLogs.length > 500) {
+  //     storedLogs.removeRange(500, storedLogs.length);
+  //   }
     
-    await prefs.setStringList('app_logs', storedLogs);
-  } catch (e) {
-    // If we can't save to shared preferences, just print the error
-    print("Error saving log to SharedPreferences: $e");
-  }
+  //   await prefs.setStringList('app_logs', storedLogs);
+  // } catch (e) {
+  //   // If we can't save to shared preferences, just print the error
+  //   print("Error saving log to SharedPreferences: $e");
+  // }
   
-  // Print to console
-  print(entry);
+  // // Print to console
+  // print(entry);
 }
 
 // Function to load logs from shared preferences (for UI display)
