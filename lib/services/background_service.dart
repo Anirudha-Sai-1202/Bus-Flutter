@@ -2,6 +2,7 @@
 
 import 'dart:async';
 import 'dart:ui';
+import 'package:flutter/material.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart';
@@ -10,6 +11,8 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/constants.dart';
 import '../utils/logger.dart';
+import '../utils/battery_optimization.dart';
+import '../utils/persistence_manager.dart';
 import '../main.dart'; // Make sure this path is correct if main.dart is needed here for flutterLocalNotificationsPlugin
 
 // --- Entry point for initializing the background service ---
@@ -29,12 +32,27 @@ Future<void> initializeService() async {
     ),
     iosConfiguration: IosConfiguration(
       onForeground: onStart,
+      onBackground: onIosBackground, // Add background handler for iOS
       autoStart: true,
     ),
   );
   logToApp("BackgroundService: Initializing service...");
   await service.startService();
   logToApp("BackgroundService: Service started.");
+}
+
+/// iOS background handler
+@pragma('vm:entry-point')
+bool onIosBackground(ServiceInstance service) {
+  WidgetsFlutterBinding.ensureInitialized();
+  logToApp("BackgroundService: iOS background handler called");
+  
+  // Schedule a task to restart the service if needed
+  Future.delayed(Duration(seconds: 5), () {
+    service.invoke('restartService');
+  });
+  
+  return true;
 }
 
 // --- Global variables to be managed by the single onStart instance ---
@@ -45,6 +63,7 @@ String? activeRouteId; // The route ID the currentSocket is connected with
 bool isTracking = false; // Indicates if location updates are actively being sent
 bool isSocketConnected = false; // Indicates if the single socket is connected
 bool isStopping = false; // Flag to prevent location updates during stopping process
+bool shouldAutoRestartTracking = false; // Flag to track if tracking should auto-restart after reconnection
 late SharedPreferences prefs;
 
 // --- Helper Functions (defined globally for accessibility) ---
@@ -163,7 +182,14 @@ Future<void> _connectPersistentSocket(ServiceInstance serviceRef, String routeId
     isSocketConnected = true;
     serviceRef.invoke('updateUI', {'isTracking': isTracking, 'status':'Connected', 'isAdminConnected': true, 'socketId': currentSocket!.id});
     _updateNotification(title: "Service Connected", content: "Ready to start Tracking for: $activeRouteId.");
-    currentSocket!.emit('connected', {'route_id': activeRouteId ?? 'default', 'socket_id': currentSocket!.id,'role': 'Driver'});
+    currentSocket!.emit('connected', {'route_id': activeRouteId ?? 'default', 'socket_id': currentSocket!.id, 'role': 'Driver', 'driver_name': prefs.getString('driverName') ?? 'Unknown Driver'});
+    
+    // Check if we need to auto-restart tracking after reconnection
+    if (shouldAutoRestartTracking && activeRouteId != null) {
+      logToApp("BackgroundService: Auto-restarting tracking after socket reconnection for route: $activeRouteId");
+      await _startTrackingLogic(serviceRef);
+      shouldAutoRestartTracking = false; // Reset the flag after restarting
+    }
   });
 
   currentSocket!.onConnectError((error) async {
@@ -174,6 +200,11 @@ Future<void> _connectPersistentSocket(ServiceInstance serviceRef, String routeId
 
   currentSocket!.onDisconnect((_) async {
     isSocketConnected = false;
+    // Remember if tracking was active before disconnection
+    if (isTracking) {
+      shouldAutoRestartTracking = true;
+      logToApp("BackgroundService: Tracking was active before disconnection. Will auto-restart after reconnection.");
+    }
     serviceRef.invoke('updateUI', {'isTracking': isTracking, 'status': 'Disconnected', 'isAdminConnected': false, 'socketId': currentSocket?.id});
     _updateNotification(title: "Service Disconnected", content: "Attempting to reconnect.");
   });
@@ -324,6 +355,26 @@ void onStart(ServiceInstance service) async {
     // Add a small delay to ensure SharedPreferences are properly initialized
     await Future.delayed(const Duration(milliseconds: 200));
     
+    // Request battery optimization permissions on Android
+    if (service is AndroidServiceInstance) {
+      try {
+        final isBatteryOptEnabled = await BatteryOptimization.isBatteryOptimizationEnabled();
+        logToApp("BackgroundService: Battery optimization enabled: $isBatteryOptEnabled");
+        
+        if (isBatteryOptEnabled) {
+          // Try to request ignore battery optimizations
+          final batteryRequestResult = await BatteryOptimization.requestIgnoreBatteryOptimizations();
+          logToApp("BackgroundService: Battery optimization request result: $batteryRequestResult");
+        }
+        
+        // Set up additional persistence mechanisms
+        PersistenceManager.startHeartbeat();
+        await PersistenceManager.setupPeriodicAlarms();
+      } catch (e) {
+        logToApp("BackgroundService: Error handling battery optimization: $e");
+      }
+    }
+    
     // Always re-fetch the latest selectedRoute from preferences at the start of onStart logic
     final String? storedRouteId = prefs.getString('selectedRoute');
     logToApp("BackgroundService: Route from SharedPreferences on start: $storedRouteId");
@@ -358,6 +409,41 @@ void onStart(ServiceInstance service) async {
 
     // Start socket health check
     _startSocketHealthCheck(service);
+    
+    // Listener for service restart requests (after crashes or device restarts)
+    service.on('restartService').listen((event) async {
+      logToApp("BackgroundService: Received restartService command.");
+      
+      // Re-initialize critical components
+      prefs = await SharedPreferences.getInstance();
+      logToApp("BackgroundService: SharedPreferences re-initialized after restart.");
+      
+      // Check if a route was previously selected
+      final String? storedRouteId = prefs.getString('selectedRoute');
+      logToApp("BackgroundService: Route from SharedPreferences after restart: $storedRouteId");
+      
+      if (storedRouteId != null) {
+        logToApp("BackgroundService: Route found after restart. Reconnecting socket for route: $storedRouteId");
+        await _connectPersistentSocket(service, storedRouteId);
+        
+        // Check if tracking was previously active
+        final bool wasTracking = prefs.getBool('location_started') ?? false;
+        logToApp("BackgroundService: Tracking state after restart: $wasTracking");
+        
+        if (wasTracking) {
+          logToApp("BackgroundService: Resuming tracking after restart for route: $storedRouteId");
+          await _startTrackingLogic(service);
+        } else {
+          logToApp("BackgroundService: Socket connected but tracking was not active after restart.");
+          service.invoke('updateUI', {'isTracking': false, 'status': 'Connected (Paused)', 'isAdminConnected': isSocketConnected, 'socketId': currentSocket?.id});
+          _updateNotification(title: "Service Connected", content: "Ready to start Tracking for: $activeRouteId.");
+        }
+      } else {
+        logToApp("BackgroundService: No route selected after restart.");
+        service.invoke('updateUI', {'isTracking': false, 'status': 'No Route Selected', 'isAdminConnected': false, 'socketId': null});
+        _updateNotification(title: "No Route Selected", content: "Select a route to start tracking.");
+      }
+    });
     
     // Listener for when a route is selected
     service.on('routeSelected').listen((event) async {
@@ -461,6 +547,12 @@ void onStart(ServiceInstance service) async {
         service.invoke('updateUI', {'isTracking': false, 'status': 'No Route Selected', 'isAdminConnected': false, 'socketId': null});
         _updateNotification(title: "No Route Selected", content: "Select a route to connect.");
       }
+    });
+    
+    // Listener for ping commands (heartbeat checks)
+    service.on('ping').listen((event) async {
+      logToApp("BackgroundService: Received ping command. Service is alive.");
+      // Just log that we received the ping - this confirms the service is running
     });
   });
 }

@@ -336,7 +336,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   decoration: BoxDecoration(
                     color: isTracking == true
                         ? Colors.red.shade700
-                        : const Color.fromARGB(255, 48, 159, 126),
+                        : const Color.fromARGB(255, 0, 195, 255),
                     shape: BoxShape.circle,
                   ),
                   alignment: Alignment.center,
