@@ -11,6 +11,7 @@ import '../utils/permissions_helper.dart';
 import '../utils/logger.dart';
 import 'package:send_to_background/send_to_background.dart';
 import 'package:flutter/services.dart';
+// import 'package:stylus_handwriting/stylus_handwriting.dart';
 
 
 class HomeScreen extends StatefulWidget {
@@ -35,6 +36,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    // _checkOtp();
     _initialize();
   }
 
@@ -44,7 +46,75 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  
+  Future<void> _checkOtp() async {
+    final prefs = await SharedPreferences.getInstance();
+    final otpEntered = prefs.getBool('otpEntered') ?? false;
+    if (!otpEntered && mounted) {
+      Future.delayed(Duration.zero, () => _showOtpDialog());
+    }
+  }
 
+  void _showOtpDialog() {
+    final TextEditingController _otpController = TextEditingController();
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        String? errorText;
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return WillPopScope(
+              onWillPop: () async => false,
+              child: AlertDialog(
+                title: const Text('Enter Password'),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: _otpController,
+                      obscureText: true,
+                      decoration: const InputDecoration(hintText: 'Enter password'),
+                    ),
+                    if (errorText != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 12.0),
+                        child: Text(
+                          errorText!,
+                          style: const TextStyle(color: Colors.red),
+                        ),
+                      ),
+                  ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () async {
+                      if (_otpController.text == "Hello") {
+                        final prefs = await SharedPreferences.getInstance();
+                        await prefs.setBool('otpEntered', true);
+                        Navigator.of(context).pop();
+                        // Enable stylus handwriting if the password is correct
+                        if (mounted) {
+                          // final stylusHandwriting = StylusHandwriting();
+                          // stylusHandwriting.enableStylusHandwriting(true);
+                        }
+                      } else {
+                        setState(() {
+                          errorText = 'Incorrect password!';
+                        });
+                      }
+                    },
+                    child: const Text('Submit'),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+  
   Future<void> _initialize() async {
     logToApp("HomeScreen: Initializing...");
     await _loadPersistedState();
@@ -162,9 +232,9 @@ class _HomeScreenState extends State<HomeScreen> {
     } else {
       if (selectedRouteId == null) {
         logToApp("HomeScreen: Cannot start tracking: No route selected.");
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Please select a route first.')),
-        );
+        // ScaffoldMessenger.of(context).showSnackBar(
+        //   const SnackBar(content: Text('Please select a route first.')),
+        // );
         return;
       }
       logToApp("HomeScreen: Checking and requesting permissions and battery optimizations.");
@@ -179,18 +249,18 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _onReconnectSocket() async {
     logToApp("HomeScreen: 'Reconnect Socket' button clicked.");
     if (selectedRouteId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select a route first to reconnect.')),
-      );
+      // ScaffoldMessenger.of(context).showSnackBar(
+      //   const SnackBar(content: Text('Please select a route first to reconnect.')),
+      // );
       logToApp("HomeScreen: Cannot reconnect: No route selected.");
       return;
     }
     logToApp("HomeScreen: Invoking 'reconnectSocket' command for route: $selectedRouteId");
     // Pass the route_id when reconnecting socket
     FlutterBackgroundService().invoke("reconnectSocket", {'route_id': selectedRouteId});
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Attempting to reconnect socket for route: $selectedRouteId')),
-    );
+    // ScaffoldMessenger.of(context).showSnackBar(
+    //   SnackBar(content: Text('Attempting to reconnect socket for route: $selectedRouteId')),
+    // );
   }
 
   Future<void> _onDisconnectSocket() async {
@@ -249,9 +319,9 @@ class _HomeScreenState extends State<HomeScreen> {
               clearLogsFromStorage(); // Clear logs from both memory and storage
               setState(() {}); // Refresh the UI
               Navigator.pop(context); // Close the dialog
-              ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Logs cleared successfully')),
-              );
+              // ScaffoldMessenger.of(context).showSnackBar(
+              //   const SnackBar(content: Text('Logs cleared successfully')),
+              // );
             },
           ),
           TextButton(
@@ -276,7 +346,11 @@ class _HomeScreenState extends State<HomeScreen> {
         return false;
       },
     child: Scaffold(
-      appBar: AppBar(title: const Text("VJ Bus Driver")),
+      appBar: AppBar(centerTitle: true,
+      title: GestureDetector(
+        onDoubleTap: _onReconnectSocket, // Calls the recc function on double tap
+        child: const Text("VJ Bus Driver"),
+      ),),
       body: Center(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24.0),
@@ -336,7 +410,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   decoration: BoxDecoration(
                     color: isTracking == true
                         ? Colors.red.shade700
-                        : const Color.fromARGB(255, 0, 195, 255),
+                        : Colors.green.shade700,
                     shape: BoxShape.circle,
                   ),
                   alignment: Alignment.center,
@@ -352,16 +426,17 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                 ),
               ),
-              const SizedBox(height: 20),
-              // NEW: Reconnect Socket Button
-              ElevatedButton(
-                onPressed: _onReconnectSocket,
-                child: const Text("Reconnect Socket"),
-              ),
               const SizedBox(height: 10),
-              TextButton(
-                onPressed: () => _showLogsDialog(context),
-                child: const Text("View Logs"),
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 25, horizontal: 1),
+                child: Text(
+                  "Route Selected: ${selectedRouteId ?? 'Not set'}",
+                  style: const TextStyle(
+                    fontSize: 20,
+                    color: Colors.green,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ),
             ],
           ),
